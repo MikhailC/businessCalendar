@@ -1,0 +1,31 @@
+@BusinessCalendarAPI_HostAddress = http://localhost:5094
+
+### Import production calendar (XML)
+POST {{BusinessCalendarAPI_HostAddress}}/api/production-calendar/import
+Content-Type: application/xml
+
+<?xml version="1.0" encoding="utf-8"?>
+<Items Description="Данные производственного календаря" Columns="Calendar,Year,DayType,Date,SwapDate">
+	<Item Calendar="РФ" Year="2017" DayType="Рабочий" Date="20171001" SwapDate="20171006"/>
+	<Item Calendar="РФ" Year="2017" DayType="Предпраздничный" Date="20171004" SwapDate=""/>
+	<Item Calendar="РФ" Year="2017" DayType="Праздник" Date="20171005" SwapDate=""/>
+	<Item Calendar="РФ" Year="2017" DayType="Воскресенье" Date="20171006" SwapDate="20171001"/>
+</Items>
+
+###
+
+### Get single day (default calendar=1)
+GET {{BusinessCalendarAPI_HostAddress}}/api/production-calendar/day?date=2016-07-06
+Accept: application/json
+
+###
+
+### Get period
+GET {{BusinessCalendarAPI_HostAddress}}/api/production-calendar/period?from=2016-07-01&to=2016-07-10
+Accept: application/json
+
+###
+
+### Get single day with custom start/end (optional individually)
+GET {{BusinessCalendarAPI_HostAddress}}/api/production-calendar/day?date=2017-10-04&starttime=08:30&endtime=19:00
+Accept: application/json

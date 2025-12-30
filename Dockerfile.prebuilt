@@ -1,0 +1,14 @@
+# Build image from pre-published output (no dotnet restore/build inside container).
+#
+# Usage (run on host, then buildx push):
+#   dotnet publish -c Release -o ./publish
+#   docker buildx build --platform linux/amd64 -f Dockerfile.prebuilt -t registry.main.fpi/businesscalendar:latest --push .
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
+WORKDIR /app
+EXPOSE 8080
+
+COPY publish/ ./
+ENTRYPOINT ["dotnet", "BusinessCalendarAPI.dll"]
+
+
