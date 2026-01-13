@@ -1,8 +1,5 @@
-using BusinessCalendarAPI.Data;
 using BusinessCalendarAPI.Dtos;
-using BusinessCalendarAPI.Models;
 using BusinessCalendarAPI.Services;
-using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -23,7 +20,7 @@ builder.Services.AddSwaggerGen(c =>
             "- Получение календаря по периоду\n\n" +
             "Правила:\n" +
             "- calendar (string) — код календаря. По умолчанию \"РФ\".\n" +
-            "- Если в БД есть запись на дату — она имеет приоритет над днем недели.\n" +
+            "- Если в загруженном календаре есть запись на дату — она имеет приоритет над днем недели.\n" +
             "- Нерабочие DayType: Праздник, Суббота, Воскресенье.\n" +
             "- starttime/endtime (HH:mm) можно задавать по отдельности, недостающий берётся по умолчанию (09:00/18:00).",
     });
@@ -37,24 +34,15 @@ builder.Services.AddSwaggerGen(c =>
     c.OperationFilter<BusinessCalendarAPI.Swagger.ProductionCalendarOperationFilter>();
 });
 
-// DB: Dev = SQLite, Prod = Postgres
-builder.Services.AddDbContext<BusinessCalendarDbContext>(options =>
-{
-    if (builder.Environment.IsDevelopment())
-    {
-        var cs = builder.Configuration.GetConnectionString("Sqlite") ?? "Data Source=business_calendar.dev.db";
-        options.UseSqlite(cs);
-    }
-    else
-    {
-        var cs = builder.Configuration.GetConnectionString("Postgres")
-                 ?? throw new InvalidOperationException("ConnectionStrings:Postgres is not configured.");
-        options.UseNpgsql(cs);
-    }
-});
-
-builder.Services.AddScoped<BusinessCalendarService>();
 builder.Services.AddSingleton<CalendarImportParser>();
+builder.Services.AddSingleton<RfCurrentYearCache>();
+
+var calendarFilePath = builder.Configuration["BusinessCalendar:FilePath"];
+if (string.IsNullOrWhiteSpace(calendarFilePath))
+    calendarFilePath = Path.Combine(builder.Environment.ContentRootPath, "businesscalendar.xml");
+
+builder.Services.AddSingleton(new BusinessCalendarFileStore(calendarFilePath));
+builder.Services.AddScoped<BusinessCalendarService>();
 
 var app = builder.Build();
 
@@ -73,55 +61,45 @@ if (app.Environment.IsDevelopment())
     app.UseHttpsRedirection();
 }
 
-// Ensure schema exists (without migrations, for simplicity).
+// Cache: "РФ" current year loaded into memory at startup
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<BusinessCalendarDbContext>();
-    await db.Database.EnsureCreatedAsync();
+    var store = scope.ServiceProvider.GetRequiredService<BusinessCalendarFileStore>();
+    var parser = scope.ServiceProvider.GetRequiredService<CalendarImportParser>();
+    var rfCache = scope.ServiceProvider.GetRequiredService<RfCurrentYearCache>();
 
-    // Best-effort schema fix for older installations:
-    // Calendar column used to be INTEGER, now it is VARCHAR. If Postgres volume was created earlier,
-    // queries will fail with "operator does not exist: integer = character varying".
-    if ((db.Database.ProviderName ?? "").Contains("Npgsql", StringComparison.OrdinalIgnoreCase))
+    var year = DateTime.Today.Year;
+    var bytes = await store.TryReadAllBytesAsync(CancellationToken.None);
+    if (bytes is not null)
     {
-        try
+        using var ms = new MemoryStream(bytes);
+        var parsed = await parser.ParseAsync(ms, CancellationToken.None);
+        if (parsed.Errors.Count == 0)
         {
-            var dataType = await db.Database.SqlQueryRaw<string>(
-                    """
-                    SELECT data_type AS "Value"
-                    FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'CalendarDays'
-                      AND column_name = 'Calendar'
-                    LIMIT 1
-                    """)
-                .FirstOrDefaultAsync();
-
-            if (string.Equals(dataType, "integer", StringComparison.OrdinalIgnoreCase))
-            {
-                await db.Database.ExecuteSqlRawAsync(
-                    """
-                    ALTER TABLE "CalendarDays"
-                    ALTER COLUMN "Calendar" TYPE character varying(32)
-                    USING "Calendar"::text
-                    """);
-            }
+            rfCache.Replace(year, parsed.Items.Where(x => x.Calendar == "РФ" && x.Date.Year == year));
         }
-        catch
-        {
-            // ignore (no hard dependency on migrations in this sample)
-        }
+    }
+    else
+    {
+        rfCache.Replace(year, Array.Empty<CalendarImportParser.ParsedItem>());
     }
 }
 
 // POST: строгий импорт XML (ошибки возвращаем, ничего не сохраняем при наличии ошибок)
 app.MapPost("/api/production-calendar/import", async (
         HttpRequest request,
-        BusinessCalendarDbContext db,
+        BusinessCalendarFileStore store,
         CalendarImportParser parser,
+        RfCurrentYearCache rfCache,
         CancellationToken ct) =>
     {
-        var parsed = await parser.ParseAsync(request.Body, ct);
+        // Read raw bytes (to preserve original encoding/prolog when writing to file)
+        using var msRaw = new MemoryStream();
+        await request.Body.CopyToAsync(msRaw, ct);
+        var rawBytes = msRaw.ToArray();
+
+        using var msParse = new MemoryStream(rawBytes);
+        var parsed = await parser.ParseAsync(msParse, ct);
         if (parsed.Errors.Count > 0)
         {
             return Results.BadRequest(new ImportCalendarResultDto
@@ -133,64 +111,17 @@ app.MapPost("/api/production-calendar/import", async (
             });
         }
 
-        var inserted = 0;
-        var updated = 0;
-        var now = DateTimeOffset.UtcNow;
+        await store.WriteAllBytesAsync(rawBytes, ct);
 
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
-
-        // upsert по (calendar, date); если в XML дубликаты — берём последний
-        var uniqueItems = new Dictionary<(string calendar, DateOnly date), CalendarImportParser.ParsedItem>();
-        foreach (var item in parsed.Items)
-            uniqueItems[(item.Calendar, item.Date)] = item;
-
-        var itemsByCalendar = uniqueItems.Values
-            .GroupBy(x => x.Calendar)
-            .ToDictionary(g => g.Key, g => g.ToList());
-
-        foreach (var (calendar, items) in itemsByCalendar)
-        {
-            var dates = items.Select(x => x.Date).Distinct().ToList();
-            var existing = await db.CalendarDays
-                .Where(x => x.Calendar == calendar && dates.Contains(x.Date))
-                .ToListAsync(ct);
-
-            var existingByDate = existing.ToDictionary(x => x.Date);
-
-            foreach (var item in items)
-            {
-                if (existingByDate.TryGetValue(item.Date, out var entity))
-                {
-                    entity.Year = item.Year;
-                    entity.DayType = item.DayType;
-                    entity.SwapDate = item.SwapDate;
-                    entity.ImportedAtUtc = now;
-                    updated++;
-                }
-                else
-                {
-                    db.CalendarDays.Add(new CalendarDayEntity
-                    {
-                        Calendar = item.Calendar,
-                        Year = item.Year,
-                        Date = item.Date,
-                        DayType = item.DayType,
-                        SwapDate = item.SwapDate,
-                        ImportedAtUtc = now
-                    });
-                    inserted++;
-                }
-            }
-        }
-
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        // refresh РФ cache for current year
+        var year = DateTime.Today.Year;
+        rfCache.Replace(year, parsed.Items.Where(x => x.Calendar == "РФ" && x.Date.Year == year));
 
         return Results.Ok(new ImportCalendarResultDto
         {
             TotalItems = parsed.TotalItems,
-            Inserted = inserted,
-            Updated = updated,
+            Inserted = 0,
+            Updated = 0,
             Errors = Array.Empty<string>()
         });
     })
@@ -201,7 +132,7 @@ app.MapPost("/api/production-calendar/import", async (
         "Принимает XML вида <Items><Item .../></Items>.\n\n" +
         "Строгий режим:\n" +
         "- если есть ошибки валидации хотя бы в одной строке — вернётся 400 и НИЧЕГО не сохранится\n" +
-        "- если ошибок нет — выполняется upsert по ключу (calendar, date)\n\n" +
+        "- если ошибок нет — файл businesscalendar.xml будет перезаписан (полная замена)\n\n" +
         "Поддерживаемые атрибуты Item:\n" +
         "- Calendar (string)\n" +
         "- Year (int, должен совпадать с годом Date)\n" +
@@ -211,10 +142,10 @@ app.MapPost("/api/production-calendar/import", async (
         "Пример XML:\n" +
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
         "<Items Description=\"Данные производственного календаря\" Columns=\"Calendar,Year,DayType,Date,SwapDate\">\n" +
-        "  <Item Calendar=\"1\" Year=\"2017\" DayType=\"Рабочий\" Date=\"20171001\" SwapDate=\"20171006\"/>\n" +
-        "  <Item Calendar=\"1\" Year=\"2017\" DayType=\"Предпраздничный\" Date=\"20171004\" SwapDate=\"\"/>\n" +
-        "  <Item Calendar=\"1\" Year=\"2017\" DayType=\"Праздник\" Date=\"20171005\" SwapDate=\"\"/>\n" +
-        "  <Item Calendar=\"1\" Year=\"2017\" DayType=\"Воскресенье\" Date=\"20171006\" SwapDate=\"20171001\"/>\n" +
+        "  <Item Calendar=\"РФ\" Year=\"2017\" DayType=\"Рабочий\" Date=\"20171001\" SwapDate=\"20171006\"/>\n" +
+        "  <Item Calendar=\"РФ\" Year=\"2017\" DayType=\"Предпраздничный\" Date=\"20171004\" SwapDate=\"\"/>\n" +
+        "  <Item Calendar=\"РФ\" Year=\"2017\" DayType=\"Праздник\" Date=\"20171005\" SwapDate=\"\"/>\n" +
+        "  <Item Calendar=\"РФ\" Year=\"2017\" DayType=\"Воскресенье\" Date=\"20171006\" SwapDate=\"20171001\"/>\n" +
         "</Items>")
     .Accepts<string>("application/xml")
     .Produces<ImportCalendarResultDto>(StatusCodes.Status200OK)

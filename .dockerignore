@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+**/.vscode/
+
+business_calendar.dev.db
+business_calendar.dev.db-shm
+business_calendar.dev.db-wal
+
+
+
+

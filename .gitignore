@@ -1,0 +1,63 @@
+# .NET / Visual Studio / Rider / VS Code
+
+## Build outputs
+bin/
+obj/
+out/
+TestResults/
+
+## Publish output (we use it for Dockerfile.prebuilt)
+publish/
+
+## User-specific files
+*.user
+*.userosscache
+*.suo
+*.userprefs
+
+## Visual Studio / MSBuild
+.vs/
+*.rsuser
+*.sln.iml
+*.cache
+*.log
+
+## Rider / IntelliJ
+.idea/
+*.iml
+
+## VS Code
+.vscode/
+
+## NuGet
+packages/
+*.nupkg
+*.snupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## OS
+[Tt]humbs.db
+Desktop.ini
+.DS_Store
+
+## Dotnet tools / local configs
+.config/
+
+## ASP.NET secrets
+secrets.json
+
+## Local databases (SQLite dev)
+*.db
+*.db-shm
+*.db-wal
+
+## Docker local overrides
+docker-compose.override.yml
+
+## Infrastructure local env
+infrastructure/.env
+
+
+

@@ -1,40 +1,16 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: businesscalendar-postgres
-    environment:
-      POSTGRES_DB: business_calendar
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      # 5432 may already be used on developer machines; expose Postgres on 5433 by default.
-      - "5433:5432"
-    volumes:
-      - businesscalendar_pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d business_calendar"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
   api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: businesscalendar-api
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080
-      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=business_calendar;Username=postgres;Password=postgres
+      BusinessCalendar__FilePath: /data/businesscalendar.xml
       # Dockerfile runs as USER $APP_UID; set a safe default
       APP_UID: "0"
     ports:
       - "8080:8080"
-
-volumes:
-  businesscalendar_pgdata:
-
-
+    volumes:
+      - ./data:/data

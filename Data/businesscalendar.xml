@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Items Description="Данные" Columns="Calendar,Year,DayType,Date,SwapDate">
+  <Item Calendar="РФ" Year="2026" DayType="Праздник" Date="20260106" SwapDate=""/>
+</Items>

@@ -15,13 +15,13 @@ Content-Type: application/xml
 ###
 
 ### Get single day (default calendar=1)
-GET {{BusinessCalendarAPI_HostAddress}}/api/production-calendar/day?date=2016-07-06
+GET {{BusinessCalendarAPI_HostAddress}}/api/production-calendar/day?calendar=РФ&date=2016-07-06
 Accept: application/json
 
 ###
 
 ### Get period
-GET {{BusinessCalendarAPI_HostAddress}}/api/production-calendar/period?from=2016-07-01&to=2016-07-10
+GET {{BusinessCalendarAPI_HostAddress}}/api/production-calendar/period?calendar=РФ&from=2016-07-01&to=2016-07-10
 Accept: application/json
 
 ###
