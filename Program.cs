@@ -46,11 +46,33 @@ builder.Services.AddScoped<BusinessCalendarService>();
 
 var app = builder.Build();
 
+// Support hosting the app under a URL prefix, e.g. https://<site>/calendar
+// Options:
+// - set env/config: PathBase=/calendar (or ASPNETCORE_PATHBASE=/calendar)
+// - or configure reverse-proxy to pass: X-Forwarded-Prefix: /calendar
+var pathBase = builder.Configuration["PathBase"] ?? builder.Configuration["ASPNETCORE_PATHBASE"];
+if (!string.IsNullOrWhiteSpace(pathBase))
+    app.UsePathBase(pathBase);
+
+app.Use(async (ctx, next) =>
+{
+    if (ctx.Request.Headers.TryGetValue("X-Forwarded-Prefix", out var prefixValues))
+    {
+        var prefix = prefixValues.ToString().Trim();
+        if (!string.IsNullOrWhiteSpace(prefix))
+            ctx.Request.PathBase = prefix.TrimEnd('/');
+    }
+
+    await next();
+});
+
 // Configure the HTTP request pipeline.
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Business Calendar API v1");
+    // IMPORTANT: use relative swagger.json path so it works behind reverse-proxy prefixes (e.g. /calendar).
+    // UI is served at {PathBase}/swagger, so this resolves to {PathBase}/swagger/v1/swagger.json.
+    c.SwaggerEndpoint("v1/swagger.json", "Business Calendar API v1");
     c.DocumentTitle = "Business Calendar API - Swagger";
 });
 
